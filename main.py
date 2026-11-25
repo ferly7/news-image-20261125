@@ -1,558 +1,392 @@
 #!/usr/bin/env python3
-# SPDX-License-Identifier: MIT
-"""THE WORLD TODAY - Wednesday, 25 November 2026, in one image.
-
-Entry for the make.fun competition "news-image-20261125"
-("Sum up 25 November's world news in one image", $100 pool).
-
-The program draws a complete newspaper front page - masthead, lead
-story, four side stories, a bottom story, an "also in the news" box
-and a sources line - onto a 1024x1024 canvas and writes it as a PNG
-to $MAKEFUN_OUTPUT_DIR/entry.png (default /output/entry.png).
-
-Everything is drawn in code: a hand-built 5x7 bitmap typeface, a
-small software rasteriser (rectangles, lines, circles, polylines)
-and a minimal PNG encoder.  Python 3 standard library only, no
-network access, no randomness, no clock: two runs always produce
-byte-identical output.
-
-Stories carried on the page (all reported 24-25 November 2026 and
-checked against the sources named):
-
-  LEAD - RIYADH: a drone launched by Yemen's Houthi fighters struck
-    the tallest tower in Riyadh, the 80-storey PIF Tower in the King
-    Abdullah Financial District, on Tuesday for the second time in
-    less than a week, wounding at least 11 people (four Egyptians,
-    three Nepalis, two Indians, two Saudis, per Saudi Civil
-    Defense). The first hit, on 19 November, caused damage but no
-    injuries. The Saudi-led coalition said the attack was carried
-    out with a drone and vowed a decisive response.
-    Sources: Reuters; Wall Street Journal; TBS News.
-  FRANCE: French judges ordered former President Nicolas Sarkozy
-    and his wife Carla Bruni to stand trial over the retraction of
-    witness Ziad Takieddine's testimony in the Libya campaign
-    funding case; 11 defendants face charges including receiving
-    stolen goods, witness tampering and criminal conspiracy; an
-    initial pre-trial hearing is set for 1 April 2027; a verdict on
-    Sarkozy's appeal in the main Libya case is due 30 November.
-    Sources: Reuters; AFP via The Voice; QNC News.
-  TECH / US: a federal jury in Brooklyn convicted China's Huawei
-    on 10 of 12 criminal counts, including bank fraud, wire fraud,
-    sanctions violations and conspiring to steal trade secrets; it
-    was acquitted of racketeering conspiracy and conspiracy to
-    obstruct justice. The case began in 2018; sentencing was set
-    for September 2027.
-    Sources: Reuters; CNN; US Department of Justice.
-  UKRAINE: President Zelenskiy confirmed Ukraine's Saturday drone
-    strike on the Russian cargo ship Sparta II in the Gulf of
-    Finland, calling it a legitimate military target; the ship,
-    owned by defence-logistics firm Oboronlogistika and bound for
-    Kaliningrad, caught fire, drifted into Finnish waters and was
-    towed back to St Petersburg. Norway's Defence Minister Tore
-    Sandvik urged caution and stability in the Baltic.
-    Sources: Reuters; Bloomberg via gCaptain; MarineLink.
-  YEMEN: Yemen's military said Houthi forces have pushed to within
-    60 km (37 miles) of Aden, the internationally recognised
-    government's temporary capital, but will not capture it;
-    spokesman Col. Majed Abdullah Al-Nuzaily said government forces
-    have set up checkpoints, reinforcements and trenches.
-    Source: Reuters.
-  LAOS: Lao PDR officially graduated from the United Nations'
-    least developed country (LDC) category on 24 November 2026,
-    ending 55 years in the group, which it joined when the category
-    was established in 1971; it met all three UN criteria, with
-    GNI per capita of $2,375.
-    Sources: UN in Lao PDR; UN OHRLLS; KPL.
-  ALSO IN THE NEWS: Trump pardons the Thanksgiving turkeys Freedom
-    and Feathers (Reuters); Trump awards Rudy Giuliani the Medal
-    of Freedom (Reuters); the EU proposes its 22nd Russia
-    sanctions package, with a visa ban for combatants, a sports
-    ban and 60 more banks off SWIFT (European Commission);
-    a radar issue delays flights at Chicago O'Hare, FAA says
-    (Reuters); England beat Australia by eight wickets in the
-    second T20I, chasing 185 to level the series (Jagran Josh).
+"""THE WORLD TODAY - front page renderer, Wednesday 25 November 2026.
+Pure stdlib, no network. Deterministic output.
+Original 5x7 bitmap typeface + hand-rolled PNG writer.
 """
-
 import os
 import struct
 import zlib
 
-WIDTH = 1024
-HEIGHT = 1024
+W = 1024
+H = 1024
 
-PAPER = (246, 243, 234)
-INK = (22, 20, 18)
-RED = (168, 32, 24)
-ORANGE = (214, 116, 36)
-GREY = (96, 92, 84)
-FAINT = (203, 197, 182)
-BOX = (236, 231, 218)
-
-# ------------------------------------------------------------------
-# 5x7 bitmap typeface.  Each glyph is seven rows of five pixels,
-# written as strings where '#' is ink and '.' is empty.
-# ------------------------------------------------------------------
+PAPER = (243, 238, 226)
+INK = (24, 24, 28)
+RED = (178, 30, 30)
+DARKRED = (120, 18, 18)
+GREY = (96, 96, 100)
+LGREY = (206, 200, 186)
+BLUE = (28, 62, 110)
+GOLD = (176, 132, 40)
+SKY = (196, 214, 228)
+BLDG = (70, 78, 92)
+WIN = (240, 224, 150)
 
 FONT = {
-    "A": (".###.", "#...#", "#...#", "#####", "#...#", "#...#", "#...#"),
-    "B": ("####.", "#...#", "#...#", "####.", "#...#", "#...#", "####."),
-    "C": (".####", "#....", "#....", "#....", "#....", "#....", ".####"),
-    "D": ("###..", "#..#.", "#...#", "#...#", "#...#", "#..#.", "###.."),
-    "E": ("#####", "#....", "#....", "####.", "#....", "#....", "#####"),
-    "F": ("#####", "#....", "#....", "####.", "#....", "#....", "#...."),
-    "G": (".####", "#....", "#....", "#.###", "#...#", "#...#", ".###."),
-    "H": ("#...#", "#...#", "#...#", "#####", "#...#", "#...#", "#...#"),
-    "I": ("#####", "..#..", "..#..", "..#..", "..#..", "..#..", "#####"),
-    "J": ("..###", "...#.", "...#.", "...#.", "...#.", "#...#", ".###."),
-    "K": ("#...#", "#..#.", "#.#..", "##...", "#.#..", "#..#.", "#...#"),
-    "L": ("#....", "#....", "#....", "#....", "#....", "#....", "#####"),
-    "M": ("#...#", "##.##", "#.#.#", "#.#.#", "#...#", "#...#", "#...#"),
-    "N": ("#...#", "#...#", "##..#", "#.#.#", "#..##", "#...#", "#...#"),
-    "O": (".###.", "#...#", "#...#", "#...#", "#...#", "#...#", ".###."),
-    "P": ("####.", "#...#", "#...#", "####.", "#....", "#....", "#...."),
-    "Q": (".###.", "#...#", "#...#", "#...#", "#.#.#", "#..#.", ".##.#"),
-    "R": ("####.", "#...#", "#...#", "####.", "#.#..", "#..#.", "#...#"),
-    "S": (".####", "#....", "#....", ".###.", "....#", "....#", "####."),
-    "T": ("#####", "..#..", "..#..", "..#..", "..#..", "..#..", "..#.."),
-    "U": ("#...#", "#...#", "#...#", "#...#", "#...#", "#...#", ".###."),
-    "V": ("#...#", "#...#", "#...#", "#...#", "#...#", ".#.#.", "..#.."),
-    "W": ("#...#", "#...#", "#...#", "#.#.#", "#.#.#", "#.#.#", ".#.#."),
-    "X": ("#...#", ".#.#.", "..#..", "..#..", "..#..", ".#.#.", "#...#"),
-    "Y": ("#...#", "#...#", ".#.#.", "..#..", "..#..", "..#..", "..#.."),
-    "Z": ("#####", "....#", "...#.", "..#..", ".#...", "#....", "#####"),
-    "0": (".###.", "#..##", "#.#.#", "##..#", "#...#", "#...#", ".###."),
-    "1": ("..#..", ".##..", "..#..", "..#..", "..#..", "..#..", "#####"),
-    "2": (".###.", "#...#", "....#", "...#.", "..#..", ".#...", "#####"),
-    "3": ("####.", "....#", "....#", ".###.", "....#", "....#", "####."),
-    "4": ("...#.", "..##.", ".#.#.", "#..#.", "#####", "...#.", "...#."),
-    "5": ("#####", "#....", "####.", "....#", "....#", "#...#", ".###."),
-    "6": (".###.", "#....", "#....", "####.", "#...#", "#...#", ".###."),
-    "7": ("#####", "....#", "...#.", "..#..", "..#..", "..#..", "..#.."),
-    "8": (".###.", "#...#", "#...#", ".###.", "#...#", "#...#", ".###."),
-    "9": (".###.", "#...#", "#...#", ".####", "....#", "....#", ".###."),
-    " ": (".....", ".....", ".....", ".....", ".....", ".....", "....."),
-    ".": (".....", ".....", ".....", ".....", ".....", ".##..", ".##.."),
-    ",": (".....", ".....", ".....", ".....", ".##..", ".##..", ".#..."),
-    ":": (".....", ".##..", ".##..", ".....", ".##..", ".##..", "....."),
-    ";": (".....", ".##..", ".##..", ".....", ".##..", ".##..", ".#..."),
-    "'": (".##..", ".##..", ".#...", ".....", ".....", ".....", "....."),
-    '"': ("#...#", "#...#", "#...#", ".....", ".....", ".....", "....."),
-    "!": ("..#..", "..#..", "..#..", "..#..", "..#..", ".....", "..#.."),
-    "?": (".###.", "#...#", "....#", "..##.", "..#..", ".....", "..#.."),
-    "-": (".....", ".....", ".....", "#####", ".....", ".....", "....."),
-    "+": (".....", "..#..", "..#..", "#####", "..#..", "..#..", "....."),
-    "/": ("....#", "....#", "...#.", "..#..", "..#..", ".#...", "#...."),
-    "(": ("...##", "..#..", ".#...", ".#...", ".#...", "..#..", "...##"),
-    ")": ("##...", "..#..", "...#.", "...#.", "...#.", "..#..", "##..."),
-    "%": ("##..#", "##.#.", "....#", "...#.", "..#..", ".#...", "#.##."),
-    "$": ("..#..", ".####", "#.#..", ".###.", "..#.#", "####.", "..#.."),
-    "&": (".##..", "#..#.", "#.#..", ".#...", "#.#.#", "#..#.", ".##.#"),
-    "*": (".....", "#.#.#", ".###.", "#####", ".###.", "#.#.#", "....."),
-    "=": (".....", ".....", "#####", ".....", "#####", ".....", "....."),
+    " ": (0, 0, 0, 0, 0, 0, 0),
+    "A": (14, 17, 17, 31, 17, 17, 17),
+    "B": (30, 17, 17, 30, 17, 17, 30),
+    "C": (14, 17, 16, 16, 16, 17, 14),
+    "D": (30, 17, 17, 17, 17, 17, 30),
+    "E": (31, 16, 16, 30, 16, 16, 31),
+    "F": (31, 16, 16, 30, 16, 16, 16),
+    "G": (14, 17, 16, 23, 17, 17, 15),
+    "H": (17, 17, 17, 31, 17, 17, 17),
+    "I": (14, 4, 4, 4, 4, 4, 14),
+    "J": (7, 2, 2, 2, 2, 18, 12),
+    "K": (17, 18, 20, 24, 20, 18, 17),
+    "L": (16, 16, 16, 16, 16, 16, 31),
+    "M": (17, 27, 21, 21, 17, 17, 17),
+    "N": (17, 25, 21, 19, 17, 17, 17),
+    "O": (14, 17, 17, 17, 17, 17, 14),
+    "P": (30, 17, 17, 30, 16, 16, 16),
+    "Q": (14, 17, 17, 17, 21, 18, 13),
+    "R": (30, 17, 17, 30, 20, 18, 17),
+    "S": (15, 16, 16, 14, 1, 1, 30),
+    "T": (31, 4, 4, 4, 4, 4, 4),
+    "U": (17, 17, 17, 17, 17, 17, 14),
+    "V": (17, 17, 17, 17, 17, 10, 4),
+    "W": (17, 17, 17, 21, 21, 21, 10),
+    "X": (17, 10, 4, 4, 4, 10, 17),
+    "Y": (17, 10, 4, 4, 4, 4, 4),
+    "Z": (31, 1, 2, 4, 8, 16, 31),
+    "0": (14, 17, 19, 21, 25, 17, 14),
+    "1": (4, 12, 4, 4, 4, 4, 14),
+    "2": (14, 17, 1, 6, 8, 16, 31),
+    "3": (30, 1, 1, 14, 1, 1, 30),
+    "4": (2, 6, 10, 18, 31, 2, 2),
+    "5": (31, 16, 30, 1, 1, 17, 14),
+    "6": (14, 16, 16, 30, 17, 17, 14),
+    "7": (31, 1, 2, 4, 8, 8, 8),
+    "8": (14, 17, 17, 14, 17, 17, 14),
+    "9": (14, 17, 17, 15, 1, 1, 14),
+    "-": (0, 0, 0, 31, 0, 0, 0),
+    ".": (0, 0, 0, 0, 0, 12, 12),
+    ",": (0, 0, 0, 0, 12, 4, 8),
+    ":": (0, 12, 12, 0, 12, 12, 0),
+    ";": (0, 12, 12, 0, 12, 4, 8),
+    "'": (4, 4, 8, 0, 0, 0, 0),
+    "/": (1, 1, 2, 4, 8, 16, 16),
+    "(": (2, 4, 8, 8, 8, 4, 2),
+    ")": (8, 4, 2, 2, 2, 4, 8),
+    "$": (4, 15, 20, 14, 5, 30, 4),
+    "%": (24, 25, 2, 4, 8, 19, 3),
+    "+": (0, 4, 4, 31, 4, 4, 0),
+    "&": (12, 18, 20, 8, 21, 18, 13),
+    "!": (4, 4, 4, 4, 4, 0, 4),
+    "?": (14, 17, 1, 6, 4, 0, 4),
+    '"': (10, 10, 10, 0, 0, 0, 0),
 }
 
-# ------------------------------------------------------------------
-# Canvas and rasteriser
-# ------------------------------------------------------------------
 
-PIX = bytearray(WIDTH * HEIGHT * 3)
+def png_bytes(pixels, width, height):
+    raw = bytearray()
+    stride = width * 3
+    for y in range(height):
+        raw.append(0)
+        raw.extend(pixels[y * stride:(y + 1) * stride])
 
+    def chunk(tag, data):
+        c = struct.pack(">I", len(data)) + tag + data
+        c += struct.pack(">I", zlib.crc32(tag + data) & 0xFFFFFFFF)
+        return c
 
-def fill_background():
-    row = bytes(PAPER) * WIDTH
-    for y in range(HEIGHT):
-        PIX[y * WIDTH * 3:(y + 1) * WIDTH * 3] = row
-
-
-def plot(x, y, colour):
-    if 0 <= x < WIDTH and 0 <= y < HEIGHT:
-        i = (y * WIDTH + x) * 3
-        PIX[i:i + 3] = bytes(colour)
-
-
-def rect(x, y, w, h, colour):
-    for yy in range(y, y + h):
-        if 0 <= yy < HEIGHT:
-            x0 = max(0, x)
-            x1 = min(WIDTH, x + w)
-            if x0 < x1:
-                i = (yy * WIDTH + x0) * 3
-                PIX[i:i + (x1 - x0) * 3] = bytes(colour) * (x1 - x0)
+    sig = b"\x89PNG\r\n\x1a\n"
+    ihdr = struct.pack(">IIBBBBB", width, height, 8, 2, 0, 0, 0)
+    idat = zlib.compress(bytes(raw), 9)
+    return sig + chunk(b"IHDR", ihdr) + chunk(b"IDAT", idat) + chunk(b"IEND", b"")
 
 
-def line(x0, y0, x1, y1, colour, thick=1):
-    dx = abs(x1 - x0)
-    dy = -abs(y1 - y0)
-    sx = 1 if x0 < x1 else -1
-    sy = 1 if y0 < y1 else -1
-    err = dx + dy
-    while True:
-        for ox in range(thick):
-            for oy in range(thick):
-                plot(x0 + ox, y0 + oy, colour)
-        if x0 == x1 and y0 == y1:
-            break
-        e2 = 2 * err
-        if e2 >= dy:
-            err += dy
-            x0 += sx
-        if e2 <= dx:
-            err += dx
-            y0 += sy
+class Canvas:
+    def __init__(self, w, h, bg):
+        self.w = w
+        self.h = h
+        self.px = bytearray(w * h * 3)
+        self.fill_rect(0, 0, w, h, bg)
+
+    def set_px(self, x, y, col):
+        if 0 <= x < self.w and 0 <= y < self.h:
+            i = (y * self.w + x) * 3
+            self.px[i] = col[0]
+            self.px[i + 1] = col[1]
+            self.px[i + 2] = col[2]
+
+    def fill_rect(self, x, y, w, h, col):
+        for yy in range(y, y + h):
+            if 0 <= yy < self.h:
+                base = yy * self.w
+                for xx in range(x, x + w):
+                    if 0 <= xx < self.w:
+                        i = (base + xx) * 3
+                        self.px[i] = col[0]
+                        self.px[i + 1] = col[1]
+                        self.px[i + 2] = col[2]
+
+    def hline(self, x, y, w, col, thick=1):
+        self.fill_rect(x, y, w, thick, col)
+
+    def vline(self, x, y, h, col, thick=1):
+        self.fill_rect(x, y, thick, h, col)
 
 
-def circle(cx, cy, r, colour, thick=2):
-    steps = max(24, r * 6)
-    for i in range(steps + 1):
-        import math
-        a = 2.0 * math.pi * i / steps
-        x = int(round(cx + r * math.cos(a)))
-        y = int(round(cy + r * math.sin(a)))
-        for ox in range(thick):
-            for oy in range(thick):
-                plot(x + ox, y + oy, colour)
-
-
-def ellipse(cx, cy, rx, ry, colour, thick=2):
-    import math
-    steps = max(24, rx * 6)
-    for i in range(steps + 1):
-        a = 2.0 * math.pi * i / steps
-        x = int(round(cx + rx * math.cos(a)))
-        y = int(round(cy + ry * math.sin(a)))
-        for ox in range(thick):
-            for oy in range(thick):
-                plot(x + ox, y + oy, colour)
-
-
-# ------------------------------------------------------------------
-# Text
-# ------------------------------------------------------------------
-
-def clean(text):
-    out = []
-    for ch in text.upper():
-        if ch in FONT:
-            out.append(ch)
-        elif ch in "-\u2013\u2014":
-            out.append("-")
-        else:
-            out.append(" ")
-    return "".join(out)
-
-
-def text_width(text, scale, spacing=1):
-    text = clean(text)
-    if not text:
+def text_width(s, scale):
+    """Each glyph cell: 5 px wide + 1 px gap, scaled."""
+    if not s:
         return 0
-    return len(text) * (5 + spacing) * scale - spacing * scale
+    return len(s) * 6 * scale - scale
 
 
-def draw_text(x, y, text, scale, colour, spacing=1):
-    text = clean(text)
+def draw_text(cv, x, y, s, scale, col):
+    s = s.upper()
     cx = x
-    for ch in text:
-        glyph = FONT[ch]
+    for ch in s:
+        glyph = FONT.get(ch, FONT["?"])
         for row in range(7):
             bits = glyph[row]
-            for col in range(5):
-                if bits[col] == "#":
-                    rect(cx + col * scale, y + row * scale, scale, scale, colour)
-        cx += (5 + spacing) * scale
-    return cx - spacing * scale
+            for col_i in range(5):
+                if bits & (1 << (4 - col_i)):
+                    cv.fill_rect(cx + col_i * scale, y + row * scale,
+                                 scale, scale, col)
+        cx += 6 * scale
+    return cx
 
 
-def draw_centered(y, text, scale, colour, spacing=1):
-    w = text_width(text, scale, spacing)
-    return draw_text((WIDTH - w) // 2, y, text, scale, colour, spacing)
+def draw_centered(cv, cx, y, s, scale, col):
+    w = text_width(s, scale)
+    return draw_text(cv, cx - w // 2, y, s, scale, col)
 
 
-def draw_right(x_right, y, text, scale, colour, spacing=1):
-    w = text_width(text, scale, spacing)
-    return draw_text(x_right - w, y, text, scale, colour, spacing)
+def draw_right(cv, xr, y, s, scale, col):
+    w = text_width(s, scale)
+    return draw_text(cv, xr - w, y, s, scale, col)
 
 
-def wrap(text, scale, max_width, spacing=1):
-    words = clean(text).split()
+def wrap(s, max_chars):
+    words = s.split()
     lines = []
-    current = ""
-    for word in words:
-        trial = word if not current else current + " " + word
-        if text_width(trial, scale, spacing) <= max_width:
-            current = trial
+    cur = ""
+    for wd in words:
+        trial = wd if not cur else cur + " " + wd
+        if len(trial) <= max_chars:
+            cur = trial
         else:
-            if current:
-                lines.append(current)
-            current = word
-    if current:
-        lines.append(current)
+            if cur:
+                lines.append(cur)
+            cur = wd
+    if cur:
+        lines.append(cur)
     return lines
 
 
-def draw_paragraph(x, y, text, scale, colour, max_width, leading):
-    lines = wrap(text, scale, max_width)
+def draw_para(cv, x, y, s, scale, col, max_chars, line_gap):
+    lines = wrap(s, max_chars)
     for i, ln in enumerate(lines):
-        draw_text(x, y + i * leading, ln, scale, colour)
-    return y + len(lines) * leading
+        draw_text(cv, x, y + i * line_gap, ln, scale, col)
+    return y + len(lines) * line_gap, lines
 
 
-def draw_two_columns(x, y, col_w, gap, text, scale, colour, leading):
-    lines = wrap(text, scale, col_w)
-    half = (len(lines) + 1) // 2
-    for i, ln in enumerate(lines[:half]):
-        draw_text(x, y + i * leading, ln, scale, colour)
-    for i, ln in enumerate(lines[half:]):
-        draw_text(x + col_w + gap, y + i * leading, ln, scale, colour)
-    return y + half * leading
+def draw_line(cv, x0, y0, x1, y1, col, thick=1):
+    dx = x1 - x0
+    dy = y1 - y0
+    steps = max(abs(dx), abs(dy), 1)
+    for i in range(steps + 1):
+        px = x0 + dx * i // steps
+        py = y0 + dy * i // steps
+        cv.fill_rect(px, py, thick, thick, col)
 
 
-# ------------------------------------------------------------------
-# Illustrations
-# ------------------------------------------------------------------
+def draw_disc(cv, cx, cy, r, col):
+    for yy in range(cy - r, cy + r + 1):
+        for xx in range(cx - r, cx + r + 1):
+            if (xx - cx) * (xx - cx) + (yy - cy) * (yy - cy) <= r * r:
+                cv.set_px(xx, yy, col)
 
-def draw_tower(cx, top, base):
-    """Riyadh's tallest tower with a red burst halfway up."""
-    w = 54
-    x0 = cx - w // 2
-    line(x0 + 8, top, x0 + w - 8, top, INK, 3)
-    line(x0 + 8, top, x0, base, INK, 3)
-    line(x0 + w - 8, top, x0 + w, base, INK, 3)
-    line(x0 - 4, base, x0 + w + 4, base, INK, 3)
-    for i in range(6):
-        yy = top + 16 + i * ((base - top - 24) // 6)
-        line(x0 + 10, yy, x0 + w - 10, yy, FAINT, 2)
-        rect(x0 + 14, yy - 6, 6, 5, GREY)
-        rect(x0 + w - 20, yy - 6, 6, 5, GREY)
-    # burst on the facade, halfway up
+
+def draw_burst(cv, cx, cy, r_out, r_in, col):
+    """Jagged explosion star: alternating radii at 16 angles."""
     import math
-    bx, by = x0 + w + 2, (top + base) // 2
-    for k in range(8):
-        a = 2.0 * math.pi * k / 8.0
-        x2 = int(round(bx + 16 * math.cos(a)))
-        y2 = int(round(by + 16 * math.sin(a)))
-        line(bx, by, x2, y2, RED, 3)
-    rect(bx - 3, by - 3, 7, 7, RED)
+    pts = []
+    for k in range(32):
+        ang = math.pi * k / 16.0
+        r = r_out if k % 2 == 0 else r_in
+        pts.append((cx + int(r * math.cos(ang)), cy + int(r * math.sin(ang))))
+    for k in range(32):
+        x0, y0 = pts[k]
+        x1, y1 = pts[(k + 1) % 32]
+        draw_line(cv, x0, y0, x1, y1, col, 2)
+        draw_line(cv, cx, cy, x0, y0, col, 1)
+    draw_disc(cv, cx, cy, r_in, col)
 
 
-def draw_courthouse(x, y, w):
-    """Pediment and columns for the Sarkozy trial story."""
-    cx = x + w // 2
-    line(cx - 34, y + 12, cx, y, INK, 3)
-    line(cx, y, cx + 34, y + 12, INK, 3)
-    line(cx - 38, y + 14, cx + 38, y + 14, INK, 3)
-    for dx in (-28, -10, 10, 28):
-        line(cx + dx, y + 18, cx + dx, y + 38, INK, 3)
-    line(cx - 38, y + 42, cx + 38, y + 42, INK, 3)
+def draw_tower(cv, x, y, w, h):
+    """Simple skyscraper: body, window grid, spire, red burst at top."""
+    cv.fill_rect(x, y, w, h, SKY)
+    cv.fill_rect(x, y, w, h, SKY)
+    tw = w * 2 // 5
+    tx = x + (w - tw) // 2
+    cv.fill_rect(tx, y + 26, tw, h - 26, BLDG)
+    # stepped crown
+    cv.fill_rect(tx + 8, y + 16, tw - 16, 12, BLDG)
+    cv.fill_rect(tx + tw // 2 - 2, y + 2, 4, 16, BLDG)
+    # windows
+    for wy in range(y + 36, y + h - 10, 14):
+        for wx in range(tx + 8, tx + tw - 8, 12):
+            cv.fill_rect(wx, wy, 6, 8, WIN)
+    # ground neighbours
+    cv.fill_rect(x + 6, y + h - 44, 34, 44, GREY)
+    cv.fill_rect(x + w - 40, y + h - 58, 34, 58, GREY)
+    cv.fill_rect(x, y + h - 3, w, 3, INK)
+    # explosion near crown
+    draw_burst(cv, tx + tw - 6, y + 30, 30, 13, RED)
+    draw_burst(cv, tx + tw - 6, y + 30, 17, 8, GOLD)
 
 
-def draw_chip(x, y, w):
-    """A microchip for the Huawei verdict story."""
-    cx = x + w // 2
-    rect(cx - 17, y + 6, 34, 34, PAPER)
-    for yy in range(y + 6, y + 40):
-        line(cx - 17, yy, cx - 17, yy, INK, 1)
-    rect(cx - 17, y + 6, 34, 3, INK)
-    rect(cx - 17, y + 37, 34, 3, INK)
-    rect(cx + 14, y + 6, 3, 34, INK)
-    rect(cx - 17, y + 6, 3, 34, INK)
-    rect(cx - 6, y + 17, 12, 12, RED)
-    for dx in (-12, 0, 12):
-        line(cx + dx, y, cx + dx, y + 6, INK, 3)
-        line(cx + dx, y + 40, cx + dx, y + 46, INK, 3)
-    for dy in (12, 23, 34):
-        line(cx - 23, y + dy, cx - 17, y + dy, INK, 3)
-        line(cx + 17, y + dy, cx + 23, y + dy, INK, 3)
+MX = 36
+CW = W - 2 * MX
 
 
-def draw_rising_arrow(x, y):
-    """A rising arrow for the Laos graduation story."""
-    pts = [(x, y + 34), (x + 22, y + 22), (x + 40, y + 26), (x + 62, y + 6)]
-    for a, b in zip(pts, pts[1:]):
-        line(a[0], a[1], b[0], b[1], ORANGE, 4)
-    ex, ey = pts[-1]
-    line(ex, ey, ex - 13, ey + 1, ORANGE, 4)
-    line(ex, ey, ex - 3, ey + 12, ORANGE, 4)
-
-
-# ------------------------------------------------------------------
-# Page composition
-# ------------------------------------------------------------------
-
-MARGIN = 40
-RIGHT = WIDTH - MARGIN
-CONTENT_W = RIGHT - MARGIN
-
-
-def rule(y, h, colour=INK):
-    rect(MARGIN, y, CONTENT_W, h, colour)
-
-
-def kicker(x, y, text):
-    draw_text(x, y, text, 2, RED)
-
-
-def column_story(x, y, w, kick, headline, body, illus=None,
-                 illus_h=62, body_leading=17):
-    kicker(x, y, kick)
-    y += 22
-    y = draw_paragraph(x, y, headline, 3, INK, w, 27)
-    y += 6
-    if illus is not None:
-        illus(x, y, w)
-        y += illus_h
-    y = draw_paragraph(x, y, body, 2, INK, w, body_leading)
+def section(cv, x, y, w, label, label_col, headline, body):
+    draw_text(cv, x, y, label, 2, label_col)
+    y += 19
+    y, _ = draw_para(cv, x, y, headline, 3, INK, w // 18, 25)
+    y += 2
+    y, _ = draw_para(cv, x, y, body, 2, INK, w // 12, 16)
     return y
 
 
-def draw_ship_icon(x, y):
-    """Tiny warship silhouette beside the Ukraine kicker."""
-    rect(x + 14, y + 6, 12, 5, INK)
-    line(x + 20, y, x + 20, y + 6, INK, 2)
-    rect(x + 2, y + 11, 36, 4, INK)
-    line(x + 2, y + 15, x + 8, y + 18, INK, 2)
-    line(x + 38, y + 15, x + 32, y + 18, INK, 2)
-    rect(x + 8, y + 18, 24, 2, INK)
+def render():
+    cv = Canvas(W, H, PAPER)
+    # outer frame
+    cv.fill_rect(18, 18, W - 36, 2, INK)
+    cv.fill_rect(18, H - 20, W - 36, 2, INK)
+    cv.fill_rect(18, 18, 2, H - 36, INK)
+    cv.fill_rect(W - 20, 18, 2, H - 36, INK)
 
+    # masthead
+    cv.hline(MX, 30, CW, INK, 3)
+    draw_centered(cv, W // 2, 40, "THE WORLD TODAY", 7, INK)
+    draw_centered(cv, W // 2, 96, "WEDNESDAY - 25 NOVEMBER 2026", 2, GREY)
+    cv.hline(MX, 118, CW, INK, 2)
+    cv.hline(MX, 123, CW, INK, 1)
 
-def also_item(x, y, w, text):
-    """One bulleted brief in the ALSO IN THE NEWS box."""
-    rect(x, y + 3, 7, 7, RED)
-    lines = wrap(text, 2, w - 16)
-    for i, ln in enumerate(lines):
-        draw_text(x + 16, y + i * 14, ln, 2, INK)
-    return y + len(lines) * 14 + 2
+    # ---- lead story ----
+    ly = 136
+    draw_text(cv, MX, ly, "SAUDI ARABIA - RIYADH", 2, RED)
+    draw_text(cv, 620, ly, "LEAD STORY", 2, GREY)
+    hy, _ = draw_para(cv, MX, ly + 20, "HOUTHI DRONE HITS RIYADH TOWER",
+                      5, INK, 18, 41)
+    lead_body = (
+        "A HOUTHI DRONE STRUCK THE 80-STOREY PIF TOWER IN THE KING "
+        "ABDULLAH FINANCIAL DISTRICT ON TUESDAY, THE SECOND SUCH HIT "
+        "IN UNDER A WEEK. AT LEAST 11 PEOPLE WERE WOUNDED - 4 FROM "
+        "EGYPT, 3 FROM NEPAL, 2 FROM INDIA AND 2 SAUDIS - THE SAUDI "
+        "CIVIL DEFENSE SAID. THE FIRST ATTACK, ON 19 NOVEMBER, "
+        "INJURED NO ONE."
+    )
+    draw_para(cv, MX, hy + 8, lead_body, 2, INK, 46, 16)
+    draw_tower(cv, 620, ly + 20, 368, 208)
 
+    # stat strip
+    sy = 386
+    stats = [("11", "WOUNDED"), ("80", "STOREYS"),
+             ("2ND", "HIT IN A WEEK"), ("19 NOV", "FIRST HIT")]
+    bw = (CW - 24) // 4
+    for i, (num, lab) in enumerate(stats):
+        bx = MX + i * (bw + 8)
+        cv.fill_rect(bx, sy, bw, 54, LGREY)
+        cv.hline(bx, sy, bw, RED, 3)
+        draw_centered(cv, bx + bw // 2, sy + 8, num, 3, DARKRED)
+        draw_centered(cv, bx + bw // 2, sy + 36, lab, 1, INK)
+    cv.hline(MX, sy + 66, CW, INK, 2)
 
-def build_page():
-    fill_background()
+    # ---- two-column grid ----
+    gy = sy + 74
+    colw = 464
+    rx = MX + colw + 24
+    cv.vline(MX + colw + 11, gy, 300, LGREY, 2)
+    y1 = section(
+        cv, MX, gy, colw, "FRANCE", BLUE,
+        "SARKOZY AND BRUNI ORDERED TO STAND TRIAL",
+        "JUDGES SENT THE FORMER PRESIDENT AND CARLA BRUNI TO TRIAL "
+        "OVER AN ALLEGED PLOT TO RETRACT TESTIMONY IN THE LIBYAN "
+        "FUNDING CASE. ELEVEN PEOPLE FACE TRIAL IN ALL, WITH A "
+        "PRE-TRIAL HEARING SET FOR 1 APRIL 2027.")
+    y2 = section(
+        cv, rx, gy, colw, "TECH - UNITED STATES", BLUE,
+        "HUAWEI GUILTY ON 10 OF 12 COUNTS IN US TRIAL",
+        "A BROOKLYN JURY CONVICTED HUAWEI OF BANK FRAUD, SANCTIONS "
+        "VIOLATIONS AND TRADE-SECRET THEFT, AND ACQUITTED IT OF "
+        "RACKETEERING. SENTENCING IS SET FOR SEPTEMBER 2027.")
+    row2 = max(y1, y2) + 10
+    y3 = section(
+        cv, MX, row2, colw, "UKRAINE WAR", RED,
+        "KYIV CONFIRMS HIT ON RUSSIAN SHIP",
+        "PRESIDENT ZELENSKIY CONFIRMED SATURDAY'S DRONE STRIKE ON "
+        "THE CARGO SHIP SPARTA II IN THE GULF OF FINLAND, CALLING "
+        "IT A LEGITIMATE TARGET. NORWAY URGED CAUTION.")
+    y4 = section(
+        cv, rx, row2, colw, "YEMEN", RED,
+        "HOUTHIS 60 KM FROM ADEN, ARMY SAYS CITY HOLDS",
+        "HOUTHI FORCES ARE 60 KM FROM ADEN, THE INTERIM CAPITAL, "
+        "BUT WILL NOT TAKE IT, YEMEN'S MILITARY SAID, AS ITS TROOPS "
+        "DUG TRENCHES AROUND THE CITY.")
+    by = max(y3, y4) + 12
 
-    # ---- masthead -------------------------------------------------
-    rule(22, 4)
-    rule(31, 1)
-    draw_centered(42, "THE WORLD TODAY", 9, INK)
-    draw_text(MARGIN, 119, "VOL. I - NO. 25", 2, GREY)
-    draw_right(RIGHT, 119, "PRICE: ONE IMAGE", 2, GREY)
-    draw_centered(114, "WEDNESDAY - 25 NOVEMBER 2026", 3, INK)
-    rule(144, 5)
-    rule(153, 2)
-
-    # ---- lead: Riyadh tower ---------------------------------------
-    kicker(MARGIN, 168, "SAUDI ARABIA - RIYADH")
-    draw_right(RIGHT, 168, "SECOND HIT IN A WEEK", 2, GREY)
-    draw_text(MARGIN, 188, "HOUTHI DRONE HITS RIYADH TOWER", 5, INK)
-    rule(232, 2, GREY)
-    lead = ("A DRONE LAUNCHED BY YEMEN'S HOUTHI FIGHTERS STRUCK THE "
-            "TALLEST TOWER IN RIYADH ON TUESDAY, WOUNDING AT LEAST "
-            "11 PEOPLE. IT WAS THE SECOND HIT IN LESS THAN A WEEK "
-            "ON THE 80-STOREY PIF TOWER; THE FIRST, ON 19 NOVEMBER, "
-            "DAMAGED THE FACADE BUT HURT NO ONE. SAUDI CIVIL DEFENSE "
-            "SAID THE WOUNDED WERE FOUR EGYPTIANS, THREE NEPALIS, "
-            "TWO INDIANS AND TWO SAUDIS.")
-    draw_two_columns(MARGIN, 246, 318, 18, lead, 2, INK, 17)
-    draw_tower(872, 252, 368)
-    draw_centered(382, "RIYADH, BY THE NUMBERS", 2, GREY)
-    draw_centered(402,
-                  "11 WOUNDED * 80 STOREYS * 2ND HIT IN A WEEK * "
-                  "FIRST HIT 19 NOV", 2, INK)
-    rule(426, 4)
-
-    # ---- row A: france | huawei ------------------------------------
-    col_w = 456
-    col2 = 528
-    column_story(MARGIN, 444, col_w, "FRANCE - PARIS",
-                 "SARKOZY AND BRUNI ORDERED TO STAND TRIAL",
-                 "FRENCH JUDGES SENT THE FORMER PRESIDENT AND HIS "
-                 "WIFE TO TRIAL OVER AN ALLEGED WITNESS-RETRACTION "
-                 "PLOT; 11 PEOPLE FACE TRIAL IN ALL.",
-                 illus=lambda x, y, w: draw_courthouse(x, y, w),
-                 illus_h=50, body_leading=16)
-    column_story(col2, 444, col_w, "TECH - NEW YORK",
-                 "HUAWEI GUILTY ON 10 OF 12 COUNTS IN US TRIAL",
-                 "A BROOKLYN JURY CONVICTED CHINA'S TELECOM GIANT "
-                 "OF BANK FRAUD, SANCTIONS BREACHES AND "
-                 "TRADE-SECRET THEFT.",
-                 illus=lambda x, y, w: draw_chip(x, y, w),
-                 illus_h=50, body_leading=16)
-    line(512, 444, 512, 632, FAINT, 2)
-    rule(642, 2, GREY)
-
-    # ---- row B: ukraine | yemen -------------------------------------
-    column_story(MARGIN, 656, col_w, "UKRAINE - GULF OF FINLAND",
-                 "KYIV CONFIRMS HIT ON RUSSIAN SHIP",
-                 "ZELENSKIY CONFIRMED SATURDAY'S DRONE STRIKE ON "
-                 "THE SPARTA II IN THE GULF OF FINLAND, CALLING IT "
-                 "A LEGITIMATE TARGET. NORWAY URGED CAUTION.",
-                 body_leading=16)
-    draw_ship_icon(456, 652)
-    column_story(col2, 656, col_w, "YEMEN - ADEN",
-                 "HOUTHIS 60 KM FROM ADEN, ARMY SAYS CITY HOLDS",
-                 "YEMEN'S MILITARY SAID HOUTHI FORCES ARE 60 KM "
-                 "FROM ADEN, ITS TEMPORARY CAPITAL, BUT WILL NOT "
-                 "TAKE IT. TROOPS DUG TRENCHES.",
-                 body_leading=16)
-    line(512, 656, 512, 802, FAINT, 2)
-    rule(812, 4)
-
-    # ---- laos --------------------------------------------------------
-    kicker(MARGIN, 824, "DEVELOPMENT - LAOS")
-    draw_text(MARGIN, 844, "LAOS GRADUATES FROM UN LEAST-DEVELOPED LIST",
+    # ---- Laos band ----
+    cv.hline(MX, by, CW, INK, 2)
+    by += 10
+    draw_text(cv, MX, by, "DEVELOPMENT - LAOS", 2, GOLD)
+    by += 19
+    draw_text(cv, MX, by, "LAOS GRADUATES FROM UN LEAST-DEVELOPED LIST",
               3, INK)
-    draw_rising_arrow(884, 826)
-    draw_paragraph(MARGIN, 874,
-                   "LAO PDR LEFT THE UN'S LEAST DEVELOPED COUNTRY "
-                   "LIST ON 24 NOVEMBER, ENDING 55 YEARS IN THE GROUP "
-                   "SINCE 1971; IT MET ALL THREE UN CRITERIA.", 2, INK,
-                   CONTENT_W, 16)
+    by += 24
+    by, _ = draw_para(
+        cv, MX, by,
+        "LAO PDR LEFT THE UN LIST OF LEAST-DEVELOPED COUNTRIES ON "
+        "24 NOVEMBER, ENDING 55 YEARS ON IT SINCE 1971, AFTER MEETING "
+        "ALL THREE UN CRITERIA, INCLUDING GNI PER PERSON OF $2,375.",
+        2, INK, 79, 16)
+    by += 4
 
-    # ---- also in the news: all five briefs, two columns --------------
-    rect(MARGIN, 914, CONTENT_W, 104, BOX)
-    draw_text(MARGIN + 12, 923, "ALSO IN THE NEWS", 2, RED)
-    draw_right(RIGHT - 12, 926,
-               "SOURCES: REUTERS - WSJ - AFP - US DOJ - EC - UN",
-               1, GREY)
-    ay = 942
-    y1 = also_item(52, ay, 436,
-                   "TRUMP PARDONS TURKEYS FREEDOM AND FEATHERS")
-    y1 = also_item(52, y1, 436,
-                   "TRUMP AWARDS GIULIANI MEDAL OF FREEDOM")
-    also_item(52, y1, 436, "ENGLAND BEAT AUSTRALIA IN 2ND T20I")
-    y2 = also_item(536, ay, 436,
-                   "EU PROPOSES 22ND RUSSIA SANCTIONS PACKAGE")
-    also_item(536, y2, 436,
-              "RADAR ISSUE DELAYS CHICAGO O'HARE FLIGHTS - FAA")
+    # ---- also in the news ----
+    cv.hline(MX, by, CW, INK, 2)
+    by += 9
+    draw_text(cv, MX, by, "ALSO IN THE NEWS", 2, RED)
+    by += 18
+    briefs_l = [
+        "- TURKEY PARDON: FREEDOM AND FEATHERS",
+        "- TRUMP: MEDAL OF FREEDOM TO GIULIANI",
+        "- EU PROPOSES 22ND RUSSIA SANCTIONS",
+    ]
+    briefs_r = [
+        "- RADAR DELAYS O'HARE FLIGHTS - FAA",
+        "- ENGLAND BEAT AUSTRALIA, 2ND T20I",
+    ]
+    for i, b in enumerate(briefs_l):
+        draw_text(cv, MX, by + i * 16, b, 2, INK)
+    for i, b in enumerate(briefs_r):
+        draw_text(cv, rx, by + i * 16, b, 2, INK)
+    by += 3 * 16 + 5
 
-
-# ------------------------------------------------------------------
-# PNG encoder (deterministic: filter 0 rows, zlib level 9)
-# ------------------------------------------------------------------
-
-def chunk(tag, data):
-    return (struct.pack(">I", len(data)) + tag + data
-            + struct.pack(">I", zlib.crc32(tag + data) & 0xFFFFFFFF))
-
-
-def encode_png():
-    raw = bytearray()
-    stride = WIDTH * 3
-    for y in range(HEIGHT):
-        raw.append(0)
-        raw += PIX[y * stride:(y + 1) * stride]
-    ihdr = struct.pack(">IIBBBBB", WIDTH, HEIGHT, 8, 2, 0, 0, 0)
-    return (b"\x89PNG\r\n\x1a\n"
-            + chunk(b"IHDR", ihdr)
-            + chunk(b"IDAT", zlib.compress(bytes(raw), 9))
-            + chunk(b"IEND", b""))
+    cv.hline(MX, by, CW, INK, 1)
+    draw_centered(cv, W // 2, by + 7,
+                  "SOURCES: REUTERS - WSJ - AFP - US DOJ - EC - UN",
+                  1, GREY)
+    return cv
 
 
 def main():
-    build_page()
     out_dir = os.environ.get("MAKEFUN_OUTPUT_DIR", "/output")
     os.makedirs(out_dir, exist_ok=True)
+    cv = render()
+    data = png_bytes(cv.px, W, H)
     path = os.path.join(out_dir, "entry.png")
-    with open(path, "wb") as fh:
-        fh.write(encode_png())
-    print("wrote", path)
+    with open(path, "wb") as f:
+        f.write(data)
+    print("wrote", path, len(data), "bytes")
 
 
 if __name__ == "__main__":
     main()
+
+
